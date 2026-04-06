@@ -1,0 +1,73 @@
+name: E2E Self Hosted
+
+on:
+  workflow_dispatch:
+
+jobs:
+  selenium:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Chrome
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Start local services
+        run: |
+          bash scripts/start_backend.sh backend.log backend.pid
+          bash scripts/start_frontend.sh frontend.log frontend.pid
+
+      - name: Wait for application startup
+        run: |
+          bash scripts/wait_for_url.sh http://localhost:8080/api/filmes 40 2
+          bash scripts/wait_for_url.sh http://localhost:5173 40 2
+
+      - name: Run Selenium test suite
+        working-directory: backend
+        env:
+          CHROME_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
+        run: mvn -B -Dtest="br.com.locadora.selenium.FilmeCrudSeleniumTest" -Dapp.base-url=http://localhost:5173 test
+
+      - name: Resumir resultados do E2E
+        if: always()
+        run: |
+          echo "## E2E em runner self-hosted" >> "$GITHUB_STEP_SUMMARY"
+          echo "- URL base: \`http://localhost:5173\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Chrome: \`${{ steps.setup-chrome.outputs.chrome-path }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Comando: \`mvn -B -Dtest=br.com.locadora.selenium.FilmeCrudSeleniumTest test\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop local services
+        if: always()
+        run: |
+          bash scripts/stop_service.sh backend.pid
+          bash scripts/stop_service.sh frontend.pid
+
+      - name: Publicar logs da aplicação
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: |
+            backend.log
+            frontend.log
+          if-no-files-found: ignore

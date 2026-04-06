@@ -1,0 +1,78 @@
+name: Verificações de Segurança
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  codeql:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        language: [ 'java-kotlin', 'javascript' ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Set up Java 21
+        if: matrix.language == 'java-kotlin'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Set up Node.js
+        if: matrix.language == 'javascript'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build Java project
+        if: matrix.language == 'java-kotlin'
+        working-directory: backend
+        run: mvn -B -DskipTests compile
+
+      - name: Install frontend dependencies
+        if: matrix.language == 'javascript'
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend for analysis
+        if: matrix.language == 'javascript'
+        working-directory: frontend
+        run: npm run build
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Dependency review
+        uses: actions/dependency-review-action@v4
+
+      - name: Resumir verificações de segurança
+        run: |
+          echo "## Verificações de Segurança" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Análise estática: CodeQL para Java e JavaScript" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Revisão de dependências: habilitada para pull requests" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,253 @@
+name: Pipeline de Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-pipeline
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build backend with Maven
+        working-directory: backend
+        run: mvn -B verify
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Upload deploy assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-assets
+          path: |
+            backend/target
+            frontend/dist
+
+      - name: Resumir etapa de build
+        run: |
+          echo "## Build para Deploy" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Ferramenta de build: Maven no backend, documentado em vez de Gradle" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Build do frontend: bundle de produção do Vite" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Artefato: \`deploy-assets\`" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-dev:
+    needs: build
+    runs-on: self-hosted
+    environment: dev
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Download deploy assets
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-assets
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Start dev environment
+        run: |
+          bash scripts/start_backend.sh backend-dev.log backend-dev.pid
+          bash scripts/start_frontend.sh frontend-dev.log frontend-dev.pid
+
+      - name: Verificações rápidas no dev
+        run: |
+          bash scripts/wait_for_url.sh http://localhost:8080/api/filmes 40 2
+          bash scripts/wait_for_url.sh http://localhost:5173 40 2
+          curl --fail --silent http://localhost:8080/api/filmes >/dev/null
+
+      - name: Resumir ambiente dev
+        if: always()
+        run: |
+          echo "## Ambiente Dev" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Ambiente: dev" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Verificações rápidas: API do backend e índice do frontend acessíveis" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop dev services
+        if: always()
+        run: |
+          bash scripts/stop_service.sh backend-dev.pid
+          bash scripts/stop_service.sh frontend-dev.pid
+
+      - name: Publicar logs do dev
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-logs
+          path: |
+            backend-dev.log
+            frontend-dev.log
+          if-no-files-found: ignore
+
+  deploy-test:
+    needs: deploy-dev
+    runs-on: self-hosted
+    environment: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Download deploy assets
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-assets
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Start test environment
+        run: |
+          bash scripts/start_backend.sh backend-test.log backend-test.pid
+          bash scripts/start_frontend.sh frontend-test.log frontend-test.pid
+
+      - name: Wait for test environment
+        run: |
+          bash scripts/wait_for_url.sh http://localhost:8080/api/filmes 40 2
+          bash scripts/wait_for_url.sh http://localhost:5173 40 2
+          curl --fail --silent http://localhost:8080/api/filmes >/dev/null
+
+      - name: Resumir ambiente de teste
+        if: always()
+        run: |
+          echo "## Ambiente de Teste" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Ambiente: test" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Validação pós-deploy: verificações HTTP do backend e frontend" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop test services
+        if: always()
+        run: |
+          bash scripts/stop_service.sh backend-test.pid
+          bash scripts/stop_service.sh frontend-test.pid
+
+      - name: Publicar logs de teste
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: |
+            backend-test.log
+            frontend-test.log
+          if-no-files-found: ignore
+
+  deploy-prod:
+    needs: deploy-test
+    runs-on: self-hosted
+    environment: prod
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Download deploy assets
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-assets
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Start production validation environment
+        run: |
+          bash scripts/start_backend.sh backend-prod.log backend-prod.pid
+          bash scripts/start_frontend.sh frontend-prod.log frontend-prod.pid
+
+      - name: Production validation
+        run: |
+          bash scripts/wait_for_url.sh http://localhost:8080/api/filmes 40 2
+          bash scripts/wait_for_url.sh http://localhost:5173 40 2
+          curl --fail --silent http://localhost:8080/api/filmes >/dev/null
+
+      - name: Resumir ambiente de produção
+        if: always()
+        run: |
+          echo "## Ambiente de Produção" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Ambiente: prod" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Proteção: configurar revisores obrigatórios nas definições de Environment do GitHub" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Validação: verificações rápidas concluídas após a promoção" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop production validation services
+        if: always()
+        run: |
+          bash scripts/stop_service.sh backend-prod.pid
+          bash scripts/stop_service.sh frontend-prod.pid
+
+      - name: Publicar logs de produção
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-logs
+          path: |
+            backend-prod.log
+            frontend-prod.log
+          if-no-files-found: ignore
