@@ -1,5 +1,7 @@
 package br.com.locadora.selenium;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.bonigarcia.wdm.WebDriverManager;
 import org.junit.jupiter.api.*;
 import org.openqa.selenium.By;
@@ -10,6 +12,11 @@ import org.openqa.selenium.chrome.ChromeOptions;
 import org.openqa.selenium.support.ui.ExpectedConditions;
 import org.openqa.selenium.support.ui.WebDriverWait;
 
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -23,10 +30,15 @@ class FilmeCrudSeleniumTest {
     private static WebDriver driver;
     private static WebDriverWait wait;
     private static final String DEFAULT_BASE_URL = "http://localhost:5173";
+    private static final String DEFAULT_API_BASE_URL = "http://localhost:8080";
     private static final String BASE_URL = resolveBaseUrl();
+    private static final String API_BASE_URL = resolveApiBaseUrl();
+    private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     @BeforeAll
-    static void setUp() {
+    static void setUp() throws Exception {
+        resetCatalog();
         WebDriverManager.chromedriver().setup();
         ChromeOptions options = new ChromeOptions();
         String chromeBinary = resolveChromeBinary();
@@ -43,10 +55,11 @@ class FilmeCrudSeleniumTest {
     }
 
     @AfterAll
-    static void tearDown() {
+    static void tearDown() throws Exception {
         if (driver != null) {
             driver.quit();
         }
+        resetCatalog();
     }
 
     private static String resolveBaseUrl() {
@@ -83,6 +96,47 @@ class FilmeCrudSeleniumTest {
         }
 
         return null;
+    }
+
+    private static String resolveApiBaseUrl() {
+        String systemProperty = System.getProperty("app.api-base-url");
+        if (systemProperty != null && !systemProperty.isBlank()) {
+            return systemProperty;
+        }
+
+        String envValue = System.getenv("APP_API_BASE_URL");
+        if (envValue != null && !envValue.isBlank()) {
+            return envValue;
+        }
+
+        return DEFAULT_API_BASE_URL;
+    }
+
+    private static void resetCatalog() throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder(apiUri("/api/filmes"))
+                .GET()
+                .build();
+
+        HttpResponse<String> response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, response.statusCode(), "Falha ao listar filmes para resetar o catálogo.");
+
+        JsonNode filmes = OBJECT_MAPPER.readTree(response.body());
+        for (JsonNode filme : filmes) {
+            long id = filme.path("id").asLong(-1);
+            if (id < 0) {
+                continue;
+            }
+
+            HttpRequest deleteRequest = HttpRequest.newBuilder(apiUri("/api/filmes/" + id))
+                    .DELETE()
+                    .build();
+            HttpResponse<Void> deleteResponse = HTTP_CLIENT.send(deleteRequest, HttpResponse.BodyHandlers.discarding());
+            assertEquals(204, deleteResponse.statusCode(), "Falha ao excluir filme " + id + " durante reset.");
+        }
+    }
+
+    private static URI apiUri(String path) {
+        return URI.create(API_BASE_URL).resolve(path);
     }
 
     @Test
